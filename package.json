@@ -1,0 +1,14 @@
+{
+  "name": "backup-restore",
+  "version": "1.0.0",
+  "description": "Programa simple para backup y restauración de contenedor MongoDB",
+  "main": "backup-restore.js",
+  "scripts": {
+    "start": "node backup-restore.js"
+  },
+  "dependencies": {
+    "date-fns": "^2.30.0"
+  },
+  "author": "",
+  "license": "ISC"
+}
