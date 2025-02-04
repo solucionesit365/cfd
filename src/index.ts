@@ -1,9 +1,15 @@
+import * as dotenv from "dotenv";
 import { MongoClient, Db, Collection } from "mongodb";
 import { execSync } from "child_process";
 import { format } from "date-fns";
-import { existsSync, mkdirSync, readdirSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "fs";
+import path, { join } from "path";
 import { homedir } from "os";
+import AWS from "aws-sdk";
+
+dotenv.config();
+
+console.log(process.env.DIGITAL_OCEAN_ENDPOINT);
 
 // Configuración con tipos
 interface Config {
@@ -14,6 +20,10 @@ interface Config {
   BACKUPS_COLLECTION: string;
   MONGODUMP_BIN: string;
   MONGORESTORE_BIN: string;
+  DIGITALOCEAN_ENDPOINT: string;
+  DIGITALOCEAN_BUCKET: string;
+  AWS_ACCESS_KEY_ID: string;
+  AWS_SECRET_ACCESS_KEY: string;
 }
 
 const CONFIG: Config = {
@@ -25,6 +35,10 @@ const CONFIG: Config = {
   // Usar los binarios instalados en el sistema:
   MONGODUMP_BIN: "mongodump",
   MONGORESTORE_BIN: "mongorestore",
+  DIGITALOCEAN_ENDPOINT: process.env.DIGITAL_OCEAN_ENDPOINT as string,
+  DIGITALOCEAN_BUCKET: "tocgame",
+  AWS_ACCESS_KEY_ID: process.env.DIGITAL_OCEAN_KEY_ACCESS_ID as string,
+  AWS_SECRET_ACCESS_KEY: process.env.DIGITAL_OCEAN_SECRET_KEY as string,
 };
 
 // Tipos para los documentos en MongoDB
@@ -51,6 +65,30 @@ class DisasterRecoveryManager {
       console.log(
         `Directorio de backups creado: ${this.config.HOST_BACKUP_DIR}`
       );
+    }
+  }
+
+  private async getStoreParams(): Promise<{
+    licencia: number;
+    nombreEmpresa: string;
+    nombreTienda: string;
+  }> {
+    const client = new MongoClient(this.config.MONGO_URI);
+    try {
+      await client.connect();
+      const database: Db = client.db();
+      const collection = database.collection("parametros");
+      const params = await collection.findOne({});
+
+      if (!params) throw new Error("No se encontraron parámetros de la tienda");
+
+      return {
+        licencia: params.licencia,
+        nombreEmpresa: params.nombreEmpresa,
+        nombreTienda: params.nombreTienda,
+      };
+    } finally {
+      await client.close();
     }
   }
 
@@ -87,6 +125,40 @@ class DisasterRecoveryManager {
     }
   }
 
+  private async uploadToDigitalOcean(
+    filePath: string,
+    storeParams: any
+  ): Promise<void> {
+    const spacesEndpoint = new AWS.Endpoint(this.config.DIGITALOCEAN_ENDPOINT);
+    const s3 = new AWS.S3({
+      endpoint: spacesEndpoint,
+      accessKeyId: this.config.AWS_ACCESS_KEY_ID,
+      secretAccessKey: this.config.AWS_SECRET_ACCESS_KEY,
+    });
+
+    const fileContent = readFileSync(filePath);
+    const fileName = path.basename(filePath);
+
+    const params = {
+      Bucket: this.config.DIGITALOCEAN_BUCKET,
+      Key: `${storeParams.licencia}/${fileName}`,
+      Body: fileContent,
+      ACL: "private",
+    };
+
+    return new Promise((resolve, reject) => {
+      s3.upload(params, (err: Error, data: AWS.S3.ManagedUpload.SendData) => {
+        if (err) {
+          console.error("Error subiendo a DigitalOcean:", err);
+          reject(err);
+        } else {
+          console.log("✅ Backup subido a DigitalOcean:", data.Location);
+          resolve();
+        }
+      });
+    });
+  }
+
   // Función modificada para crear backup en modo archive (archivo .gz)
   public async createBackup(): Promise<void> {
     const timestamp = format(new Date(), "yyyyMMdd-HHmmss");
@@ -120,6 +192,8 @@ class DisasterRecoveryManager {
       });
 
       await client.close();
+      const storeParams = await this.getStoreParams();
+      await this.uploadToDigitalOcean(backupFile, storeParams);
       console.log("✅ Backup preventivo creado correctamente.");
     } catch (error) {
       console.error("Error en creación de backup:", error);
