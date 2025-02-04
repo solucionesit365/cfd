@@ -1,14 +1,25 @@
 {
-  "name": "backup-restore",
+  "name": "cfd",
   "version": "1.0.0",
-  "description": "Programa simple para backup y restauración de contenedor MongoDB",
-  "main": "backup-restore.js",
+  "description": "",
+  "main": "index.js",
   "scripts": {
-    "start": "node backup-restore.js"
+    "prestart": "bash setup.sh",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "watch": "tsc --watch"
   },
-  "dependencies": {
-    "date-fns": "^2.30.0"
-  },
+  "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@types/mongodb": "^4.0.6",
+    "@types/node": "^22.13.0",
+    "date-fns": "^4.1.0",
+    "mongodb": "^6.13.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
 }
