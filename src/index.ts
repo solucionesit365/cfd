@@ -143,13 +143,10 @@ class DisasterRecoveryManager {
 
       console.log(`Restaurando desde backup: ${latestBackup.path}`);
 
-      // El volcado se creó con mongodump y contiene la carpeta "tocgame"
-      const dbName = "tocgame";
-      const dbDumpPath = join(latestBackup.path, dbName);
-
-      // Ahora usamos mongorestore sin indicar la base en el URI, sino con --db, lo que permite crear la base de datos si no existe
+      // Usamos --nsInclude para restaurar únicamente los namespaces que correspondan a tocgame.*
+      // Se utiliza el directorio completo de backup, sin añadir la carpeta "tocgame"
       execSync(
-        `"${this.config.MONGORESTORE_BIN}" --uri="mongodb://localhost:27017" --db=${dbName} --drop "${dbDumpPath}"`,
+        `"${this.config.MONGORESTORE_BIN}" --uri="mongodb://localhost:27017" --nsInclude="tocgame.*" --drop "${latestBackup.path}"`,
         { stdio: "inherit" }
       );
 
