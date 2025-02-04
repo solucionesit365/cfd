@@ -1,7 +1,7 @@
 import { MongoClient, Db, Collection } from "mongodb";
 import { execSync } from "child_process";
 import { format } from "date-fns";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -129,42 +129,47 @@ class DisasterRecoveryManager {
 
   // Función modificada para restaurar desde un backup archive
   private async restoreFromLatestBackup(): Promise<void> {
-    const client = new MongoClient(this.config.MONGO_URI);
     try {
-      await client.connect();
-      const collection: Collection<BackupRecord> = client
-        .db()
-        .collection(this.config.BACKUPS_COLLECTION);
+      // Leer el directorio de backups y encontrar el archivo más reciente
+      const backupFiles = readdirSync(this.config.HOST_BACKUP_DIR)
+        .filter((file) => file.endsWith(".gz"))
+        .sort()
+        .reverse();
 
-      const latestBackup = await collection.findOne(
-        { status: "created" },
-        { sort: { createdAt: -1 } }
-      );
-
-      if (!latestBackup) {
-        throw new Error("No hay backups disponibles para restaurar");
+      if (backupFiles.length === 0) {
+        throw new Error("No hay backups disponibles en el directorio");
       }
 
-      console.log(`Restaurando desde backup: ${latestBackup.path}`);
+      const latestBackup = backupFiles[0];
+      const backupPath = join(this.config.HOST_BACKUP_DIR, latestBackup);
 
-      // Restaurar usando --archive y --gzip
+      console.log(`Restaurando desde backup: ${backupPath}`);
+
+      // Ejecutar mongorestore
       execSync(
-        `"${this.config.MONGORESTORE_BIN}" --uri="mongodb://localhost:27017/tocgame" --drop --archive="${latestBackup.path}" --gzip`,
+        `"${this.config.MONGORESTORE_BIN}" --uri="${this.config.MONGO_URI}" --drop --archive="${backupPath}" --gzip`,
         { stdio: "inherit" }
       );
 
-      // Actualizar el estado del backup a "restored"
+      // Opcional: Registrar la restauración en la base de datos (si es necesario)
+      const client = new MongoClient(this.config.MONGO_URI);
+      await client.connect();
+      const collection = client
+        .db()
+        .collection<BackupRecord>(this.config.BACKUPS_COLLECTION);
+
       await collection.updateOne(
-        { _id: latestBackup._id },
-        { $set: { status: "restored" } }
+        { path: backupPath },
+        { $set: { status: "restored" } },
+        { upsert: true } // En caso de que el registro no exista
       );
+
+      await client.close();
 
       console.log("♻️ Sistema restaurado desde el último backup.");
     } catch (error) {
       console.error("Error en restauración:", error);
       throw error;
-    } finally {
-      await client.close();
     }
   }
 
