@@ -19,13 +19,12 @@ interface Config {
 const CONFIG: Config = {
   MONGO_URI: "mongodb://localhost:27017/tocgame",
   CHECK_INTERVAL: 300000, // 5 minutos
-  // Se crea el backup en $HOME/backups/tocgamedb
   HOST_BACKUP_DIR: join(homedir(), "backups", "tocgamedb"),
   SALES_COLLECTION: "sales",
   BACKUPS_COLLECTION: "backups",
-  // Se asume que los binarios están en la raíz del proyecto
-  MONGODUMP_BIN: join(process.cwd(), "mongodump"),
-  MONGORESTORE_BIN: join(process.cwd(), "mongorestore"),
+  // Usamos los binarios instalados en el sistema:
+  MONGODUMP_BIN: "mongodump",
+  MONGORESTORE_BIN: "mongorestore",
 };
 
 // Tipos para documentos en MongoDB
