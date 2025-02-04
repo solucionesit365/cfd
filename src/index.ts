@@ -149,7 +149,7 @@ class DisasterRecoveryManager {
 
       // Restaurar usando --archive y --gzip
       execSync(
-        `"${this.config.MONGORESTORE_BIN}" --uri="mongodb://localhost:27017" --drop --archive="${latestBackup.path}" --gzip`,
+        `"${this.config.MONGORESTORE_BIN}" --uri="mongodb://localhost:27017/tocgame" --drop --archive="${latestBackup.path}" --gzip`,
         { stdio: "inherit" }
       );
 
