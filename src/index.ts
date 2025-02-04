@@ -5,28 +5,30 @@ import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
-// Configuración con tipos
+// Definición de la configuración
 interface Config {
   MONGO_URI: string;
   CHECK_INTERVAL: number;
   HOST_BACKUP_DIR: string;
-  CONTAINER_BACKUP_DIR: string;
   SALES_COLLECTION: string;
   BACKUPS_COLLECTION: string;
-  CONTAINER_NAME: string;
+  MONGODUMP_BIN: string;
+  MONGORESTORE_BIN: string;
 }
 
 const CONFIG: Config = {
   MONGO_URI: "mongodb://localhost:27017/tocgame",
   CHECK_INTERVAL: 300000, // 5 minutos
-  HOST_BACKUP_DIR: join(homedir(), "backups"),
-  CONTAINER_BACKUP_DIR: "/tmp/mongobackups",
+  // Se crea el backup en $HOME/backups/tocgamedb
+  HOST_BACKUP_DIR: join(homedir(), "backups", "tocgamedb"),
   SALES_COLLECTION: "sales",
   BACKUPS_COLLECTION: "backups",
-  CONTAINER_NAME: "mongodb", // Verificar nombre del contenedor con 'docker ps'
+  // Se asume que los binarios están en la raíz del proyecto
+  MONGODUMP_BIN: join(process.cwd(), "mongodump"),
+  MONGORESTORE_BIN: join(process.cwd(), "mongorestore"),
 };
 
-// Tipos para los documentos de MongoDB
+// Tipos para documentos en MongoDB
 interface Sale {
   _id: string;
   createdAt: Date;
@@ -40,40 +42,40 @@ interface BackupRecord {
 }
 
 class DisasterRecoveryManager {
-  private dbClient?: MongoClient;
-
   constructor(private config: Config) {
     this.ensureBackupDir();
   }
 
+  // Se asegura que exista el directorio de backups en el host
   private ensureBackupDir(): void {
     if (!existsSync(this.config.HOST_BACKUP_DIR)) {
-      mkdirSync(this.config.HOST_BACKUP_DIR, { recursive: true, mode: 0o755 });
+      mkdirSync(this.config.HOST_BACKUP_DIR, { recursive: true, mode: 0o700 });
+      console.log(
+        `Directorio de backups creado: ${this.config.HOST_BACKUP_DIR}`
+      );
     }
   }
 
+  // Verifica en MongoDB si existen ventas en los últimos 5 minutos
   public async checkRecentSales(): Promise<boolean> {
-    this.dbClient = new MongoClient(this.config.MONGO_URI);
-
+    const client = new MongoClient(this.config.MONGO_URI);
     try {
-      await this.dbClient.connect();
-      const database: Db = this.dbClient.db();
+      await client.connect();
+      const database: Db = client.db();
       const collection: Collection<Sale> = database.collection(
         this.config.SALES_COLLECTION
       );
-
       const fiveMinutesAgo = new Date(Date.now() - this.config.CHECK_INTERVAL);
-
       const count: number = await collection.countDocuments({
         createdAt: { $gte: fiveMinutesAgo },
       });
-
       return count > 0;
     } finally {
-      await this.dbClient.close();
+      await client.close();
     }
   }
 
+  // Muestra un diálogo Zenity y devuelve true si el usuario indica que hay problemas
   public showDialog(): boolean {
     try {
       execSync(
@@ -83,48 +85,35 @@ class DisasterRecoveryManager {
           "--width=300",
         { stdio: "inherit" }
       );
+      // Si el usuario acepta (clic en Aceptar), se entiende que SÍ hay problemas
       return true;
     } catch (error) {
+      // Si cancela o cierra el diálogo, se interpreta como "no hay problemas"
       return false;
     }
   }
 
+  // Crea un backup utilizando el binario local mongodump
   public async createBackup(): Promise<void> {
     const timestamp = format(new Date(), "yyyyMMdd-HHmmss");
     const backupName = `backup-${timestamp}`;
-    const containerBackupPath = join(
-      this.config.CONTAINER_BACKUP_DIR,
-      backupName
-    );
     const hostBackupPath = join(this.config.HOST_BACKUP_DIR, backupName);
 
     try {
-      // 1. Crear backup dentro del contenedor
+      console.log(`Creando backup en: ${hostBackupPath}`);
+
+      // Ejecutar mongodump
       execSync(
-        `docker exec ${this.config.CONTAINER_NAME} ` +
-          `mongodump --uri="${this.config.MONGO_URI}" ` +
-          `--out="${containerBackupPath}"`,
+        `"${this.config.MONGODUMP_BIN}" --uri="${this.config.MONGO_URI}" --out="${hostBackupPath}"`,
         { stdio: "inherit" }
       );
 
-      // 2. Copiar desde contenedor a host
-      execSync(
-        `docker cp ${this.config.CONTAINER_NAME}:${containerBackupPath} ${this.config.HOST_BACKUP_DIR}`,
-        { stdio: "inherit" }
-      );
-
-      // 3. Limpiar contenedor
-      execSync(
-        `docker exec ${this.config.CONTAINER_NAME} rm -rf ${containerBackupPath}`,
-        { stdio: "inherit" }
-      );
-
-      // Registrar en MongoDB
+      // Registrar el backup en la colección de backups de MongoDB
       const client = new MongoClient(this.config.MONGO_URI);
       await client.connect();
-      const collection = client
+      const collection: Collection<BackupRecord> = client
         .db()
-        .collection<BackupRecord>(this.config.BACKUPS_COLLECTION);
+        .collection(this.config.BACKUPS_COLLECTION);
 
       await collection.insertOne({
         path: hostBackupPath,
@@ -134,20 +123,22 @@ class DisasterRecoveryManager {
       });
 
       await client.close();
+      console.log("✅ Backup preventivo creado correctamente.");
     } catch (error) {
       console.error("Error en creación de backup:", error);
       throw error;
     }
   }
 
+  // Restaura el sistema usando el último backup registrado
   private async restoreFromLatestBackup(): Promise<void> {
     const client = new MongoClient(this.config.MONGO_URI);
 
     try {
       await client.connect();
-      const collection = client
+      const collection: Collection<BackupRecord> = client
         .db()
-        .collection<BackupRecord>(this.config.BACKUPS_COLLECTION);
+        .collection(this.config.BACKUPS_COLLECTION);
 
       const latestBackup = await collection.findOne(
         { status: "created" },
@@ -158,48 +149,21 @@ class DisasterRecoveryManager {
         throw new Error("No hay backups disponibles para restaurar");
       }
 
-      // Preparar rutas
-      const backupDirName = latestBackup.path.split("/").pop() || "";
-      const containerRestorePath = join(
-        this.config.CONTAINER_BACKUP_DIR,
-        "restore",
-        backupDirName
-      );
+      console.log(`Restaurando desde backup: ${latestBackup.path}`);
 
-      // 1. Crear directorio temporal en contenedor
+      // Ejecutar mongorestore para restaurar la base de datos
       execSync(
-        `docker exec ${this.config.CONTAINER_NAME} mkdir -p ${containerRestorePath}`,
+        `"${this.config.MONGORESTORE_BIN}" --uri="${this.config.MONGO_URI}" --drop --dir="${latestBackup.path}"`,
         { stdio: "inherit" }
       );
 
-      // 2. Copiar backup al contenedor
-      execSync(
-        `docker cp "${latestBackup.path}" ${this.config.CONTAINER_NAME}:${containerRestorePath}`,
-        { stdio: "inherit" }
-      );
-
-      // 3. Ejecutar restore
-      execSync(
-        `docker exec ${this.config.CONTAINER_NAME} ` +
-          `mongorestore --uri="${this.config.MONGO_URI}" ` +
-          `--dir="${containerRestorePath}" --drop`,
-        { stdio: "inherit" }
-      );
-
-      // 4. Limpiar contenedor
-      execSync(
-        `docker exec ${this.config.CONTAINER_NAME} rm -rf ${join(
-          this.config.CONTAINER_BACKUP_DIR,
-          "restore"
-        )}`,
-        { stdio: "inherit" }
-      );
-
-      // Actualizar estado
+      // Actualizar el estado del backup a "restored"
       await collection.updateOne(
         { _id: latestBackup._id },
         { $set: { status: "restored" } }
       );
+
+      console.log("♻️ Sistema restaurado desde el último backup.");
     } catch (error) {
       console.error("Error en restauración:", error);
       throw error;
@@ -208,6 +172,7 @@ class DisasterRecoveryManager {
     }
   }
 
+  // Inicia el ciclo de monitorización
   public async startMonitoring(): Promise<void> {
     console.log("Iniciando monitorización del sistema...");
 
@@ -216,20 +181,20 @@ class DisasterRecoveryManager {
         const hasRecentSales = await this.checkRecentSales();
 
         if (!hasRecentSales) {
+          // Si no hay ventas recientes, se pregunta al usuario
           const hasProblems = this.showDialog();
 
           if (!hasProblems) {
             await this.createBackup();
-            console.log("✅ Backup preventivo creado correctamente");
           } else {
             await this.restoreFromLatestBackup();
-            console.log("♻️ Sistema restaurado desde el último backup");
           }
         }
       } catch (error) {
         console.error("⚠️ Error en monitorización:", error);
       }
 
+      // Espera el intervalo configurado antes de volver a comprobar
       await new Promise((resolve) =>
         setTimeout(resolve, this.config.CHECK_INTERVAL)
       );
