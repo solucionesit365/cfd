@@ -24,6 +24,7 @@ interface Config {
   DIGITALOCEAN_BUCKET: string;
   AWS_ACCESS_KEY_ID: string;
   AWS_SECRET_ACCESS_KEY: string;
+  AWS_REGION: string;
 }
 
 const CONFIG: Config = {
@@ -39,6 +40,7 @@ const CONFIG: Config = {
   DIGITALOCEAN_BUCKET: "tocgame",
   AWS_ACCESS_KEY_ID: process.env.DIGITAL_OCEAN_KEY_ACCESS_ID as string,
   AWS_SECRET_ACCESS_KEY: process.env.DIGITAL_OCEAN_SECRET_KEY as string,
+  AWS_REGION: "ams3",
 };
 
 // Tipos para los documentos en MongoDB
@@ -131,9 +133,12 @@ class DisasterRecoveryManager {
   ): Promise<void> {
     const spacesEndpoint = new AWS.Endpoint(this.config.DIGITALOCEAN_ENDPOINT);
     const s3 = new AWS.S3({
-      endpoint: spacesEndpoint,
+      endpoint: new AWS.Endpoint(this.config.DIGITALOCEAN_ENDPOINT),
       accessKeyId: this.config.AWS_ACCESS_KEY_ID,
       secretAccessKey: this.config.AWS_SECRET_ACCESS_KEY,
+      region: this.config.AWS_REGION, // Añadir región
+      s3ForcePathStyle: false, // Importante para formato de URL correcto
+      signatureVersion: "v4",
     });
 
     const fileContent = readFileSync(filePath);
