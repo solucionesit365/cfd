@@ -5,7 +5,7 @@ import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
-// Definición de la configuración
+// Configuración con tipos
 interface Config {
   MONGO_URI: string;
   CHECK_INTERVAL: number;
@@ -22,12 +22,12 @@ const CONFIG: Config = {
   HOST_BACKUP_DIR: join(homedir(), "backups", "tocgamedb"),
   SALES_COLLECTION: "sales",
   BACKUPS_COLLECTION: "backups",
-  // Usamos los binarios instalados en el sistema:
+  // Usar los binarios instalados en el sistema
   MONGODUMP_BIN: "mongodump",
   MONGORESTORE_BIN: "mongorestore",
 };
 
-// Tipos para documentos en MongoDB
+// Tipos para los documentos en MongoDB
 interface Sale {
   _id: string;
   createdAt: Date;
@@ -45,7 +45,6 @@ class DisasterRecoveryManager {
     this.ensureBackupDir();
   }
 
-  // Se asegura que exista el directorio de backups en el host
   private ensureBackupDir(): void {
     if (!existsSync(this.config.HOST_BACKUP_DIR)) {
       mkdirSync(this.config.HOST_BACKUP_DIR, { recursive: true, mode: 0o700 });
@@ -55,7 +54,6 @@ class DisasterRecoveryManager {
     }
   }
 
-  // Verifica en MongoDB si existen ventas en los últimos 5 minutos
   public async checkRecentSales(): Promise<boolean> {
     const client = new MongoClient(this.config.MONGO_URI);
     try {
@@ -74,7 +72,6 @@ class DisasterRecoveryManager {
     }
   }
 
-  // Muestra un diálogo Zenity y devuelve true si el usuario indica que hay problemas
   public showDialog(): boolean {
     try {
       execSync(
@@ -84,15 +81,12 @@ class DisasterRecoveryManager {
           "--width=300",
         { stdio: "inherit" }
       );
-      // Si el usuario acepta (clic en Aceptar), se entiende que SÍ hay problemas
       return true;
     } catch (error) {
-      // Si cancela o cierra el diálogo, se interpreta como "no hay problemas"
       return false;
     }
   }
 
-  // Crea un backup utilizando el binario local mongodump
   public async createBackup(): Promise<void> {
     const timestamp = format(new Date(), "yyyyMMdd-HHmmss");
     const backupName = `backup-${timestamp}`;
@@ -101,7 +95,7 @@ class DisasterRecoveryManager {
     try {
       console.log(`Creando backup en: ${hostBackupPath}`);
 
-      // Ejecutar mongodump
+      // Se crea el volcado usando el binario local (mongodump creará una carpeta con el nombre de la base de datos, en este caso "tocgame")
       execSync(
         `"${this.config.MONGODUMP_BIN}" --uri="${this.config.MONGO_URI}" --out="${hostBackupPath}"`,
         { stdio: "inherit" }
@@ -129,10 +123,9 @@ class DisasterRecoveryManager {
     }
   }
 
-  // Restaura el sistema usando el último backup registrado
+  // Función modificada para restaurar incluso si la base de datos no existe
   private async restoreFromLatestBackup(): Promise<void> {
     const client = new MongoClient(this.config.MONGO_URI);
-
     try {
       await client.connect();
       const collection: Collection<BackupRecord> = client
@@ -150,9 +143,13 @@ class DisasterRecoveryManager {
 
       console.log(`Restaurando desde backup: ${latestBackup.path}`);
 
-      // Ejecutar mongorestore para restaurar la base de datos
+      // El volcado se creó con mongodump y contiene la carpeta "tocgame"
+      const dbName = "tocgame";
+      const dbDumpPath = join(latestBackup.path, dbName);
+
+      // Ahora usamos mongorestore sin indicar la base en el URI, sino con --db, lo que permite crear la base de datos si no existe
       execSync(
-        `"${this.config.MONGORESTORE_BIN}" --uri="${this.config.MONGO_URI}" --drop --dir="${latestBackup.path}"`,
+        `"${this.config.MONGORESTORE_BIN}" --uri="mongodb://localhost:27017" --db=${dbName} --drop "${dbDumpPath}"`,
         { stdio: "inherit" }
       );
 
@@ -171,7 +168,6 @@ class DisasterRecoveryManager {
     }
   }
 
-  // Inicia el ciclo de monitorización
   public async startMonitoring(): Promise<void> {
     console.log("Iniciando monitorización del sistema...");
 
@@ -180,7 +176,6 @@ class DisasterRecoveryManager {
         const hasRecentSales = await this.checkRecentSales();
 
         if (!hasRecentSales) {
-          // Si no hay ventas recientes, se pregunta al usuario
           const hasProblems = this.showDialog();
 
           if (!hasProblems) {
@@ -193,7 +188,6 @@ class DisasterRecoveryManager {
         console.error("⚠️ Error en monitorización:", error);
       }
 
-      // Espera el intervalo configurado antes de volver a comprobar
       await new Promise((resolve) =>
         setTimeout(resolve, this.config.CHECK_INTERVAL)
       );
