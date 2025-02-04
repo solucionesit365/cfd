@@ -22,7 +22,7 @@ const CONFIG: Config = {
   HOST_BACKUP_DIR: join(homedir(), "backups", "tocgamedb"),
   SALES_COLLECTION: "sales",
   BACKUPS_COLLECTION: "backups",
-  // Usar los binarios instalados en el sistema
+  // Usar los binarios instalados en el sistema:
   MONGODUMP_BIN: "mongodump",
   MONGORESTORE_BIN: "mongorestore",
 };
@@ -87,17 +87,21 @@ class DisasterRecoveryManager {
     }
   }
 
+  // Función modificada para crear backup en modo archive (archivo .gz)
   public async createBackup(): Promise<void> {
     const timestamp = format(new Date(), "yyyyMMdd-HHmmss");
-    const backupName = `backup-${timestamp}`;
-    const hostBackupPath = join(this.config.HOST_BACKUP_DIR, backupName);
+    const backupBasePath = join(
+      this.config.HOST_BACKUP_DIR,
+      `backup-${timestamp}`
+    );
+    const backupFile = `${backupBasePath}.gz`;
 
     try {
-      console.log(`Creando backup en: ${hostBackupPath}`);
+      console.log(`Creando backup en: ${backupFile}`);
 
-      // Se crea el volcado usando el binario local (mongodump creará una carpeta con el nombre de la base de datos, en este caso "tocgame")
+      // Se crea el backup en modo archive con compresión gzip
       execSync(
-        `"${this.config.MONGODUMP_BIN}" --uri="${this.config.MONGO_URI}" --out="${hostBackupPath}"`,
+        `"${this.config.MONGODUMP_BIN}" --uri="${this.config.MONGO_URI}" --archive="${backupFile}" --gzip`,
         { stdio: "inherit" }
       );
 
@@ -109,7 +113,7 @@ class DisasterRecoveryManager {
         .collection(this.config.BACKUPS_COLLECTION);
 
       await collection.insertOne({
-        path: hostBackupPath,
+        path: backupFile,
         createdAt: new Date(),
         type: "emergency",
         status: "created",
@@ -123,7 +127,7 @@ class DisasterRecoveryManager {
     }
   }
 
-  // Función modificada para restaurar incluso si la base de datos no existe
+  // Función modificada para restaurar desde un backup archive
   private async restoreFromLatestBackup(): Promise<void> {
     const client = new MongoClient(this.config.MONGO_URI);
     try {
@@ -143,10 +147,9 @@ class DisasterRecoveryManager {
 
       console.log(`Restaurando desde backup: ${latestBackup.path}`);
 
-      // Usamos --nsInclude para restaurar únicamente los namespaces que correspondan a tocgame.*
-      // Se utiliza el directorio completo de backup, sin añadir la carpeta "tocgame"
+      // Restaurar usando --archive y --gzip
       execSync(
-        `"${this.config.MONGORESTORE_BIN}" --uri="mongodb://localhost:27017" --nsInclude="tocgame.*" --drop "${latestBackup.path}"`,
+        `"${this.config.MONGORESTORE_BIN}" --uri="mongodb://localhost:27017" --drop --archive="${latestBackup.path}" --gzip`,
         { stdio: "inherit" }
       );
 
