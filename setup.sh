@@ -54,13 +54,13 @@ if command -v sestatus &> /dev/null; then
     sudo restorecon -Rv "$BACKUP_DIR"
 fi
 
-echo "=== Configuración de GNOME (desactivar bloqueo y establecer tiempo de salvapantallas a 300 segundos) ==="
+echo "=== Configuración de GNOME (desactivar bloqueo y establecer tiempo de salvapantallas a 30 segundos) ==="
 if [ -n "$SUDO_USER" ]; then
     sudo -u "$SUDO_USER" gsettings set org.gnome.desktop.screensaver lock-enabled false
-    sudo -u "$SUDO_USER" gsettings set org.gnome.desktop.session idle-delay 300
+    sudo -u "$SUDO_USER" gsettings set org.gnome.desktop.session idle-delay 30
 else
     gsettings set org.gnome.desktop.screensaver lock-enabled false
-    gsettings set org.gnome.desktop.session idle-delay 300
+    gsettings set org.gnome.desktop.session idle-delay 30
 fi
 
 echo "=== Aplicando cambios de grupo ==="
