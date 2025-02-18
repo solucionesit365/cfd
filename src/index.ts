@@ -1,14 +1,15 @@
-import { MongoClient, Db, Collection } from "mongodb";
+import { MongoClient, Collection } from "mongodb";
 import { execSync } from "child_process";
 import { format } from "date-fns";
 import { existsSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { sessionBus } from "dbus-next";
 
 // Configuración con tipos
 interface Config {
   MONGO_URI: string;
-  CHECK_INTERVAL: number;
+  CHECK_INTERVAL: number; // No se utiliza, pero se conserva por compatibilidad
   HOST_BACKUP_DIR: string;
   SALES_COLLECTION: string;
   BACKUPS_COLLECTION: string;
@@ -18,29 +19,18 @@ interface Config {
 
 const CONFIG: Config = {
   MONGO_URI: "mongodb://localhost:27017/tocgame",
-  CHECK_INTERVAL: 300000, // 5 minutos
+  CHECK_INTERVAL: 300000, // 5 minutos (no se utiliza en este ejemplo)
   HOST_BACKUP_DIR: join(homedir(), "backups", "tocgamedb"),
   SALES_COLLECTION: "sales",
   BACKUPS_COLLECTION: "backups",
-  // Usar los binarios instalados en el sistema:
   MONGODUMP_BIN: "mongodump",
   MONGORESTORE_BIN: "mongorestore",
 };
 
-// Tipos para los documentos en MongoDB
-interface Sale {
-  _id: string;
-  createdAt: Date;
-}
-
-interface BackupRecord {
-  path: string;
-  createdAt: Date;
-  type: "emergency" | "scheduled";
-  status: "created" | "failed" | "restored";
-}
-
 class DisasterRecoveryManager {
+  // Se usará para evitar disparar múltiples veces la acción
+  private alertTriggered: boolean = false;
+
   constructor(private config: Config) {
     this.ensureBackupDir();
   }
@@ -48,37 +38,68 @@ class DisasterRecoveryManager {
   private ensureBackupDir(): void {
     if (!existsSync(this.config.HOST_BACKUP_DIR)) {
       mkdirSync(this.config.HOST_BACKUP_DIR, { recursive: true, mode: 0o700 });
-      console.log(
-        `Directorio de backups creado: ${this.config.HOST_BACKUP_DIR}`
-      );
+      console.log(`Directorio de backups creado: ${this.config.HOST_BACKUP_DIR}`);
     }
   }
 
-  public async checkRecentSales(): Promise<boolean> {
-    const client = new MongoClient(this.config.MONGO_URI);
+  /**
+   * Se suscribe al evento "ActiveChanged" del salvapantallas de GNOME vía DBus.
+   * Cuando se activa (active=true), se asume inactividad y se dispara la lógica.
+   */
+  private async startScreenSaverMonitoring(): Promise<void> {
+    const bus = sessionBus();
     try {
-      await client.connect();
-      const database: Db = client.db();
-      const collection: Collection<Sale> = database.collection(
-        this.config.SALES_COLLECTION
+      const proxyObject = await bus.getProxyObject(
+        "org.gnome.ScreenSaver",
+        "/org/gnome/ScreenSaver"
       );
-      const fiveMinutesAgo = new Date(Date.now() - this.config.CHECK_INTERVAL);
-      const count: number = await collection.countDocuments({
-        createdAt: { $gte: fiveMinutesAgo },
+      const screensaver = proxyObject.getInterface("org.gnome.ScreenSaver");
+
+      // Cuando se activa el salvapantallas (inactividad detectada)
+      screensaver.on("ActiveChanged", (active: boolean) => {
+        if (active) {
+          console.log("⚠️ Salvapantallas activado (inactividad detectada).");
+          this.onInactivityDetected();
+        } else {
+          console.log("Salvapantallas desactivado, actividad detectada.");
+        }
       });
-      return count > 0;
-    } finally {
-      await client.close();
+
+      console.log("Monitoreando el estado del salvapantallas...");
+    } catch (error) {
+      console.error("Error al suscribirse al salvapantallas:", error);
     }
   }
 
+  /**
+   * Se ejecuta cuando se detecta inactividad (salvapantallas activado).
+   * Muestra un diálogo y, según la respuesta, crea un backup o restaura el sistema.
+   */
+  private async onInactivityDetected(): Promise<void> {
+    if (this.alertTriggered) return;
+    this.alertTriggered = true;
+
+    const hasProblems = this.showDialog();
+    if (!hasProblems) {
+      await this.createBackup();
+    } else {
+      await this.restoreFromLatestBackup();
+    }
+
+    // Reinicia la bandera para permitir futuros disparos
+    this.alertTriggered = false;
+  }
+
+  /**
+   * Muestra un diálogo de alerta usando zenity.
+   * Retorna true si el usuario indica que hay problemas; de lo contrario, false.
+   */
   public showDialog(): boolean {
     try {
       execSync(
-        "zenity --question " +
-          '--title="Verificación de sistema" ' +
-          '--text="No se detectaron ventas en los últimos 5 minutos. ¿Está teniendo problemas con el sistema?" ' +
-          "--width=300",
+        'zenity --question --title="Verificación de sistema" ' +
+        '--text="El salvapantallas se ha activado. ¿Está teniendo problemas con el sistema?" ' +
+        "--width=300",
         { stdio: "inherit" }
       );
       return true;
@@ -87,28 +108,25 @@ class DisasterRecoveryManager {
     }
   }
 
-  // Función modificada para crear backup en modo archive (archivo .gz)
+  /**
+   * Crea un backup del sistema utilizando mongodump en modo archive (.gz)
+   * y registra el backup en la colección correspondiente.
+   */
   public async createBackup(): Promise<void> {
     const timestamp = format(new Date(), "yyyyMMdd-HHmmss");
-    const backupBasePath = join(
-      this.config.HOST_BACKUP_DIR,
-      `backup-${timestamp}`
-    );
+    const backupBasePath = join(this.config.HOST_BACKUP_DIR, `backup-${timestamp}`);
     const backupFile = `${backupBasePath}.gz`;
 
     try {
       console.log(`Creando backup en: ${backupFile}`);
-
-      // Se crea el backup en modo archive con compresión gzip
       execSync(
         `"${this.config.MONGODUMP_BIN}" --uri="${this.config.MONGO_URI}" --archive="${backupFile}" --gzip`,
         { stdio: "inherit" }
       );
 
-      // Registrar el backup en la colección de backups de MongoDB
       const client = new MongoClient(this.config.MONGO_URI);
       await client.connect();
-      const collection: Collection<BackupRecord> = client
+      const collection: Collection<any> = client
         .db()
         .collection(this.config.BACKUPS_COLLECTION);
 
@@ -127,10 +145,11 @@ class DisasterRecoveryManager {
     }
   }
 
-  // Función modificada para restaurar desde un backup archive
+  /**
+   * Restaura el sistema a partir del backup archive más reciente.
+   */
   private async restoreFromLatestBackup(): Promise<void> {
     try {
-      // Leer el directorio de backups y encontrar el archivo más reciente
       const backupFiles = readdirSync(this.config.HOST_BACKUP_DIR)
         .filter((file) => file.endsWith(".gz"))
         .sort()
@@ -144,28 +163,24 @@ class DisasterRecoveryManager {
       const backupPath = join(this.config.HOST_BACKUP_DIR, latestBackup);
 
       console.log(`Restaurando desde backup: ${backupPath}`);
-
-      // Ejecutar mongorestore
       execSync(
         `"${this.config.MONGORESTORE_BIN}" --uri="${this.config.MONGO_URI}" --drop --archive="${backupPath}" --gzip`,
         { stdio: "inherit" }
       );
 
-      // Opcional: Registrar la restauración en la base de datos (si es necesario)
       const client = new MongoClient(this.config.MONGO_URI);
       await client.connect();
       const collection = client
         .db()
-        .collection<BackupRecord>(this.config.BACKUPS_COLLECTION);
+        .collection(this.config.BACKUPS_COLLECTION);
 
       await collection.updateOne(
         { path: backupPath },
         { $set: { status: "restored" } },
-        { upsert: true } // En caso de que el registro no exista
+        { upsert: true }
       );
 
       await client.close();
-
       console.log("♻️ Sistema restaurado desde el último backup.");
     } catch (error) {
       console.error("Error en restauración:", error);
@@ -173,30 +188,15 @@ class DisasterRecoveryManager {
     }
   }
 
+  /**
+   * Inicia la monitorización del salvapantallas.
+   * Mantiene el proceso en ejecución indefinidamente.
+   */
   public async startMonitoring(): Promise<void> {
-    console.log("Iniciando monitorización del sistema...");
-
-    while (true) {
-      try {
-        const hasRecentSales = await this.checkRecentSales();
-
-        if (!hasRecentSales) {
-          const hasProblems = this.showDialog();
-
-          if (!hasProblems) {
-            await this.createBackup();
-          } else {
-            await this.restoreFromLatestBackup();
-          }
-        }
-      } catch (error) {
-        console.error("⚠️ Error en monitorización:", error);
-      }
-
-      await new Promise((resolve) =>
-        setTimeout(resolve, this.config.CHECK_INTERVAL)
-      );
-    }
+    await this.startScreenSaverMonitoring();
+    console.log("Iniciando monitorización basada en el salvapantallas...");
+    // Mantener el proceso vivo
+    return new Promise(() => { });
   }
 }
 

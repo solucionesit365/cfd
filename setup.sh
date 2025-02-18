@@ -5,7 +5,6 @@
 BACKUP_DIR="$HOME/backups/tocgamedb"
 
 echo "=== Configuración de directorio de backups ==="
-# 1. Crear el directorio de backups sin necesidad de sudo
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 echo "Directorio de backups configurado en: $BACKUP_DIR"
@@ -13,11 +12,8 @@ echo "Directorio de backups configurado en: $BACKUP_DIR"
 echo "=== Verificando la instalación de mongodb-org-tools ==="
 if ! command -v mongodump &> /dev/null; then
     echo "mongodump no encontrado. Se procederá a instalar mongodb-org-tools."
-    # Agregar la clave pública del repositorio oficial de MongoDB
     wget -qO - https://www.mongodb.org/static/pgp/server-6.0.asc | sudo apt-key add -
-    # Agregar el repositorio oficial de MongoDB (ajustando la distribución actual)
     echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu $(lsb_release -sc)/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list
-    # Actualizar la lista de paquetes e instalar mongodb-org-tools
     sudo apt-get update
     sudo apt-get install -y mongodb-org-tools
 else
@@ -25,27 +21,49 @@ else
 fi
 
 echo "=== Configuración de Docker ==="
-# 2. Configurar permisos de Docker (evitar usar sudo)
 sudo groupadd docker 2>/dev/null  # Ignorar si ya existe
 sudo usermod -aG docker "$USER"
 
 echo "=== Configuración de sudoers para Docker ==="
-# 3. Configuración segura en sudoers para ejecutar 'docker exec' sin contraseña
 SUDOERS_FILE="/etc/sudoers.d/disaster-recovery"
 echo "Defaults:$USER !requiretty" | sudo tee "$SUDOERS_FILE" >/dev/null
 echo "$USER ALL=(root) NOPASSWD: /usr/bin/docker exec *" | sudo tee -a "$SUDOERS_FILE" >/dev/null
 sudo chmod 0440 "$SUDOERS_FILE"
 
+echo "=== Configuración de permisos para dispositivos de entrada ==="
+if groups "$USER" | grep -q "\binput\b"; then
+    echo "El usuario $USER ya pertenece al grupo 'input'."
+else
+    echo "Añadiendo usuario $USER al grupo 'input' para acceder al dispositivo táctil."
+    sudo usermod -aG input "$USER"
+    echo "Por favor, cierra la sesión y vuelve a iniciarla para que los cambios tengan efecto."
+fi
+
+echo "=== Verificación de dispositivo táctil ==="
+if [ -e /dev/input/event8 ]; then
+    echo "El dispositivo /dev/input/event8 existe. Permisos actuales:"
+    ls -l /dev/input/event8
+else
+    echo "Advertencia: /dev/input/event8 no existe. Asegúrate de que el dispositivo táctil está conectado y utiliza el nombre correcto."
+fi
+
 echo "=== Configuración de política SELinux (si aplica) ==="
-# 4. Configurar SELinux si la herramienta sestatus está disponible
 if command -v sestatus &> /dev/null; then
     sudo setenforce 0
     sudo semanage fcontext -a -t container_file_t "$BACKUP_DIR(/.*)?"
     sudo restorecon -Rv "$BACKUP_DIR"
 fi
 
+echo "=== Configuración de GNOME (desactivar bloqueo y establecer tiempo de salvapantallas a 300 segundos) ==="
+if [ -n "$SUDO_USER" ]; then
+    sudo -u "$SUDO_USER" gsettings set org.gnome.desktop.screensaver lock-enabled false
+    sudo -u "$SUDO_USER" gsettings set org.gnome.desktop.session idle-delay 300
+else
+    gsettings set org.gnome.desktop.screensaver lock-enabled false
+    gsettings set org.gnome.desktop.session idle-delay 300
+fi
+
 echo "=== Aplicando cambios de grupo ==="
-# 5. Aplicar cambios de grupo (esto reinicia la sesión de grupo para el usuario actual)
 newgrp docker <<EONG
 echo "Configuración completada:"
 echo " - Directorio de backups: $BACKUP_DIR"

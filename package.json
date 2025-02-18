@@ -18,6 +18,8 @@
     "@types/mongodb": "^4.0.6",
     "@types/node": "^22.13.0",
     "date-fns": "^4.1.0",
+    "dbus-next": "^0.10.2",
+    "evdev": "^0.3.0",
     "mongodb": "^6.13.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.3"
